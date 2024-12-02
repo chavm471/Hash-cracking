@@ -14,37 +14,38 @@
 #define NUM_ALGORITHMS 6
 
 //global variables
-//static int num_threads = 1;
+static int num_threads = 1;
 struct crypt_data crypt_inf;
+int plain_count = 0;
+int hash_count = 0;
+char **hash_array = NULL; //array for hash data
+char **plain_array = NULL;//array for plain data
+//total counts of each hash algo processed between all threads
+size_t global_hash_counts[ALGORITHM_MAX] = {0};
+//total failed cracks across all threads
+size_t global_failed_to_crack = 0;
+pthread_mutex_t output_lock = PTHREAD_MUTEX_INITIALIZER;
+FILE *output = NULL;
 
 //function prototypes
 char * read_file(char * filename);
 char **fill_array(char *data,int *word_count);
-void *crack_hash(char *password);
+void *crack(void *arg);
 int get_next_row(void);
 double elapse_time(struct timeval *t0,struct timeval *t1);
 
 int
 main(int argc, char *argv[]){
-    int num_threads = 1;
     char *hashed_file = NULL;
     char * dict_file = NULL;
     char *passwrd_data = NULL;
     char *plain_data = NULL;
-    FILE *output = stdout;
     char * output_filename = NULL;
-    int plain_count = 0;
-    int hash_count = 0;
-    char * result = NULL;
     //char buf[BUF_SIZE] = {'\0'};
-    char **hash_array = NULL; //array for hash data
-    char **plain_array = NULL;//array for plain data
-    int cracked = 0;
-    int j = -1;
-    int k = -1;
     struct timeval et0;
     struct timeval et1;
     pthread_t *threads = NULL;
+    long tid = 0;
 
     //getopt scope
     {
@@ -98,11 +99,9 @@ main(int argc, char *argv[]){
     }
     //continue main here
     
-    //initialize threads
-    threads = malloc(num_threads * sizeof(pthread_t));
-
     //check if output file was passed 
-    //print out to fprintf(output
+    //print out to fprintf(output,
+    output = stdout;
     if(output_filename != NULL){
         output = fopen(output_filename,"w");
     }
@@ -131,12 +130,27 @@ main(int argc, char *argv[]){
     //store plain text data into a string
     plain_data = read_file(dict_file);
 
-    //printf("\nThis is the string:\n%s",plain_data);
-
     //fills an array with plain text
     plain_array = fill_array(plain_data,&plain_count);
+
+    //initialize threads
+    threads = malloc(num_threads * sizeof(pthread_t));
+    if(!threads){
+        perror("failed to allocate threads\n");
+        exit(EXIT_FAILURE);
+    }
+
+    //create threads
+    for(tid = 0; tid < num_threads; tid++){
+        pthread_create(&threads[tid], NULL,crack,(void *)(long)tid);
+    }
+
+    //wait for threads to finish
+    for(tid = 0; tid < num_threads;tid++){
+        pthread_join(threads[tid],NULL);
+    }
     
-    //loop through password array first
+    /*//loop through password array first
     for(j = get_next_row(); j < hash_count;j = get_next_row()){
         crypt_inf.initialized = 0;
         cracked = 0;
@@ -170,7 +184,8 @@ main(int argc, char *argv[]){
         if(!cracked){
             fprintf(output,"*** failed to crack  %s  %s\n",plain_array[j],hash_array[j]);
         }
-    }
+    }*/
+
     gettimeofday(&et1,NULL);
 
     {
@@ -195,9 +210,48 @@ main(int argc, char *argv[]){
     free(plain_array);
     free(passwrd_data);
     free(plain_data);
+    free(threads);
     //free(result);
 
     exit(EXIT_SUCCESS);
+}
+//crack function
+void *crack(void *arg){
+    int j,k = -1;
+    int cracked = 0;
+    char *result = NULL;
+    struct crypt_data cdata;
+
+    cdata.initialized = 0;
+
+    for(j = get_next_row(); j < hash_count;j = get_next_row()){
+    ///while((j = get_next_row()) != -1){
+        cracked = 0;//flag
+
+        //loop through plain passwords
+        for(k = 0;k < plain_count; k++)
+        {
+            result = crypt_rn(plain_array[k],hash_array[j],&cdata,sizeof(cdata));
+            if(!result){
+                fprintf(stderr,"Error:crypt_rn returned NULL");
+                continue;
+            }
+
+            if(strcmp(result,hash_array[j]) == 0){
+                //output cracked passwords
+                pthread_mutex_lock(&output_lock);
+                fprintf(output,"cracked  %s  %s\n",plain_array[k],hash_array[j]);
+                pthread_mutex_unlock(&output_lock);
+                cracked = 1;
+            }
+        }
+        if(!cracked){
+            pthread_mutex_lock(&output_lock);
+            fprintf(output,"*** failed to crack  %s\n",hash_array[j]);
+            pthread_mutex_unlock(&output_lock);
+        }
+    }
+    pthread_exit(EXIT_SUCCESS);
 }
 
 double elapse_time(struct timeval *t0,struct timeval *t1){
@@ -224,14 +278,15 @@ int get_next_row(void){
 //read file
 char * read_file(char * filename){
     //variables
-    FILE *file= fopen(filename,"r");
+    //FILE *file= fopen(filename,"r");
     //char buffer[BUF_SIZE] = {'\0'};
-    int fd = open(filename,O_RDONLY);// get file descriptor of file to read
+    //int fd = open(filename,O_RDONLY);// get file descriptor of file to read
+    int fd = open(filename,O_RDONLY);
     struct stat file_info;
     ssize_t bytes_read,total_bytes_read = 0;
     char *data = NULL;
 
-    if(file == NULL){
+    if(fd == -1){
         perror("Error opening file");
         exit(EXIT_FAILURE);
     }
@@ -259,13 +314,11 @@ char * read_file(char * filename){
 
     while((bytes_read = (read(fd,data,file_info.st_size))) > 0){
         total_bytes_read += bytes_read;
-
-
         //token = strtok(NULL, " ");
     }
 
     //printf("The total_bytes_read is :%ld",total_bytes_read);
-    //data[total_bytes_read] = '\0';
+    data[total_bytes_read] = '\0';
     //close file descriptor
     close(fd);
 
@@ -311,19 +364,3 @@ char **fill_array(char *data,int *word_count){
     return array;
 }
 
-/*void *crack(void *){
-//memset and strcpy data into struct
-memset(crypt_inf.input,0,CRYPT_MAX_PASSPHRASE_SIZE+1);
-//strcpy(
-
-//read plain text file
-
-//copy over to crypt
-memset(crypt_inf.output,0,CRYPT_OUTPUT_SIZE+1);
-//store plain text in another array 
-//for loop to loop through plain text
-//call crypt_rn with struct data
-//iterate through the whole plain file and try to crack the 
-//the hash
-//
-}*/
