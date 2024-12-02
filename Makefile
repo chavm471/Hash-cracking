@@ -1,7 +1,7 @@
 CC=gcc
 
-WERROR = 
-#WERROR = -Werror
+#WERROR = 
+WERROR = -Werror
 
 CFLAGS= -g -Wall -Wextra -Wshadow -Wunreachable-code\
 	-Wredundant-decls -Wmissing-declarations\

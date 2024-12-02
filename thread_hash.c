@@ -23,8 +23,10 @@ char **plain_array = NULL;//array for plain data
 //total counts of each hash algo processed between all threads
 size_t global_hash_counts[ALGORITHM_MAX] = {0};
 //total failed cracks across all threads
-size_t global_failed_to_crack = 0;
+size_t total_failed_to_crack = 0;
 pthread_mutex_t output_lock = PTHREAD_MUTEX_INITIALIZER;
+pthread_mutex_t stderr_lock = PTHREAD_MUTEX_INITIALIZER;
+pthread_mutex_t stats_lock = PTHREAD_MUTEX_INITIALIZER;
 FILE *output = NULL;
 
 //function prototypes
@@ -33,6 +35,7 @@ char **fill_array(char *data,int *word_count);
 void *crack(void *arg);
 int get_next_row(void);
 double elapse_time(struct timeval *t0,struct timeval *t1);
+hash_algorithm_t get_hash_algo(const char* hash);
 
 int
 main(int argc, char *argv[]){
@@ -41,11 +44,12 @@ main(int argc, char *argv[]){
     char *passwrd_data = NULL;
     char *plain_data = NULL;
     char * output_filename = NULL;
-    //char buf[BUF_SIZE] = {'\0'};
     struct timeval et0;
     struct timeval et1;
+    double threads_time = 0;
     pthread_t *threads = NULL;
     long tid = 0;
+    int niceness = 0;
 
     //getopt scope
     {
@@ -91,6 +95,7 @@ main(int argc, char *argv[]){
                     exit(EXIT_FAILURE);
                     break;
                 case 'n':
+                    niceness = NICE_VALUE;
                     break;
                 default:
                     break;
@@ -110,6 +115,11 @@ main(int argc, char *argv[]){
     if(!dict_file){
         fprintf(stderr,"must give name for dictionary input file with -d filename\n");
         exit(EXIT_FAILURE);
+    }
+    if(niceness > 0){
+        if(nice(NICE_VALUE) == -1){
+            fprintf(stderr,"nice value was set correctly\n");
+        }
     }
 
     if(!hashed_file){
@@ -149,61 +159,24 @@ main(int argc, char *argv[]){
     for(tid = 0; tid < num_threads;tid++){
         pthread_join(threads[tid],NULL);
     }
-    
-    /*//loop through password array first
-    for(j = get_next_row(); j < hash_count;j = get_next_row()){
-        crypt_inf.initialized = 0;
-        cracked = 0;
-
-        //memset and strcpy data into struct
-        memset(crypt_inf.input,0,CRYPT_MAX_PASSPHRASE_SIZE+1);
-        strcpy(crypt_inf.input,hash_array[j]);
-        //printf("crypt input is:%s\n",crypt_inf.input);
-    
-        //loop through plain array
-        for(k = 0;k < plain_count; k++){
-            //copy over to crypt
-            memset(crypt_inf.output,0,CRYPT_OUTPUT_SIZE+1);
-            strcpy(crypt_inf.output,plain_array[k]);
-            //printf("crypt output is:%s\n",crypt_inf.output);
-
-            //pass into crypt
-            result = crypt_rn(plain_array[k], hash_array[j],&crypt_inf, sizeof(crypt_inf));
-            if(!result)
-		    {
-			    fprintf(stderr, "Error: crypt_rn returned NULL for password %s and plain word %s\n", plain_array[j],hash_array[j]);
-		    }
-            //printf("result is:%s\n",result);
-            //strcmp with hash
-            if(strcmp(result,crypt_inf.input) == 0){
-                fprintf(output,"cracked  %s  %s\n",plain_array[j],hash_array[j]);
-                cracked = 1;
-                break;//exit inner loop since hash is cracked
-            }
-        }
-        if(!cracked){
-            fprintf(output,"*** failed to crack  %s  %s\n",plain_array[j],hash_array[j]);
-        }
-    }*/
 
     gettimeofday(&et1,NULL);
 
-    {
-        double total_time = elapse_time(&et0,&et1);
-        //print the format 
-        fprintf(output,"thread:    sec:   %8.2lf  \tDES:   \tNT:   \tMD5:   \tSHA256:   \tSHA512:   \tYESCRYPT:    \tGOST_YESCRYPT:    \tB_CRYPT:    total:      failed:    \n",total_time);
-        fprintf(output,"total:    sec:    \t\tDES:   \t\tNT:   \t\tMD5:   \t\tSHA256:   \t\tSHA512:   \t\tYESCRYPT:    \tGOST_YESCRYPT:    \t\tB_CRYPT:    total:      failed:    \n");
-    }
-    // Print the organized data (for verification)
-    /*printf("Plain Data:\n");
-      for (int i = 0; i < plain_count; ++i) {
-      printf("%s\n", plain_array[i]);
-      }
+    threads_time = elapse_time(&et0,&et1);
 
-      printf("Hash Data:\n");
-      for (int i = 0; i < hash_count; ++i) {
-      printf("%s\n", hash_array[i]);
-      }*/
+    //
+    //display thread summary results
+	fprintf(stderr, "total:  %2d %8.2lf sec  ", num_threads, threads_time);
+
+	//iterate through each hash algorithm and print counts
+	for (int alg = 0; alg < ALGORITHM_MAX; ++alg)
+	{
+		fprintf(stderr, "%15s: %5ld  ", algorithm_string[alg], global_hash_counts[alg]);
+	}
+
+	//print total processed and failed counts
+ 	fprintf(stderr, "total: %8d", hash_count);
+    fprintf(stderr, "  failed: %8ld\n", total_failed_to_crack);
 
     //free memory
     free(hash_array); // Free the array
@@ -215,18 +188,54 @@ main(int argc, char *argv[]){
 
     exit(EXIT_SUCCESS);
 }
+
+//pass in hash to determine hash algorithm
+hash_algorithm_t get_hash_algo(const char* hash)
+{
+	if (hash == NULL || strlen(hash) ==  0) return ALGORITHM_MAX; //unkown algo
+
+	if (hash[0] != '$') return DES;
+
+	if (hash[1] == '3') return NT;
+
+	if (hash[1] == '1') return MD5;
+
+	if (hash[1] == '5') return SHA256;
+
+	if (hash[1] == '6') return SHA512;
+
+	if (hash[1] == 'y') return YESCRYPT;
+
+	if (hash[1] == 'g' && hash[2] == 'y') return GOST_YESCRYPT;
+
+	if (hash[1] == '2' && hash[2] == 'b') return BCRYPT;
+
+	return ALGORITHM_MAX;
+}
+
 //crack function
 void *crack(void *arg){
     int j,k = -1;
     int cracked = 0;
     char *result = NULL;
     struct crypt_data cdata;
+    int tid = (int)(long)arg;
+    struct timeval start_time,end_time;
+    double total_t =0;
+    size_t alg_count[ALGORITHM_MAX] = {0};
+    size_t fail_count = 0;
+    //counts all hashes
+    size_t count_all = 0;
 
     cdata.initialized = 0;
+
+    gettimeofday(&start_time,NULL);
 
     for(j = get_next_row(); j < hash_count;j = get_next_row()){
     ///while((j = get_next_row()) != -1){
         cracked = 0;//flag
+        //increment the count for each algorithm
+        ++alg_count[get_hash_algo(hash_array[j])];
 
         //loop through plain passwords
         for(k = 0;k < plain_count; k++)
@@ -248,9 +257,50 @@ void *crack(void *arg){
         if(!cracked){
             pthread_mutex_lock(&output_lock);
             fprintf(output,"*** failed to crack  %s\n",hash_array[j]);
+            ++fail_count;
             pthread_mutex_unlock(&output_lock);
         }
+        //add 1 to total hashes processed in single thread
+        ++count_all;
     }
+    
+    //stop "stopwatch"
+    gettimeofday(&end_time,NULL);
+    
+    //get total time
+    total_t = elapse_time(&start_time,&end_time);
+    
+    //lock the stderr mutex
+    pthread_mutex_lock(&stderr_lock);
+
+	fprintf(stderr, "thread: %2d %8.2lf sec  ", tid, total_t);
+
+	//iterate through each hash algorithm and print counts
+	for (int alg = 0; alg < ALGORITHM_MAX; ++alg)
+	{
+		fprintf(stderr, "%15s: %5ld  ", algorithm_string[alg], alg_count[alg]);
+	}
+
+	//print total processed and failed counts
+ 	fprintf(stderr, "total: %8ld", count_all);
+    fprintf(stderr, "  failed: %8ld\n", fail_count);
+
+	pthread_mutex_unlock(&stderr_lock); 
+    
+    //mutex to lock the global
+    pthread_mutex_unlock(&stats_lock);
+
+    //add to global failed to crack from current thread
+    total_failed_to_crack += fail_count;
+
+    //loop through
+    for(int alg = 0; alg < ALGORITHM_MAX;++alg){
+        global_hash_counts[alg] += alg_count[alg];
+    }
+
+    //unlock stats mutex
+	pthread_mutex_unlock(&stats_lock); 
+
     pthread_exit(EXIT_SUCCESS);
 }
 
