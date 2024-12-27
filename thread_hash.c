@@ -1,3 +1,5 @@
+/*Marcos Chavez Lab5
+Jesse Chaney*/
 #include<stdio.h>
 #include<string.h>
 #include<stdlib.h>
@@ -24,7 +26,6 @@ char **plain_array = NULL;//array for plain data
 size_t global_hash_counts[ALGORITHM_MAX] = {0};
 //total failed cracks across all threads
 size_t total_failed_to_crack = 0;
-pthread_mutex_t output_lock = PTHREAD_MUTEX_INITIALIZER;
 pthread_mutex_t stderr_lock = PTHREAD_MUTEX_INITIALIZER;
 pthread_mutex_t stats_lock = PTHREAD_MUTEX_INITIALIZER;
 FILE *output = NULL;
@@ -77,7 +78,11 @@ main(int argc, char *argv[]){
                     break;
                 case 't':
                     if(optarg){
+                        //num threads cant be more than 24
                         num_threads = atoi(optarg);
+                        if(num_threads > 24){
+                            num_threads = 1;
+                        }
                     }
                     break;
                 case 'v':
@@ -184,7 +189,11 @@ main(int argc, char *argv[]){
     free(passwrd_data);
     free(plain_data);
     free(threads);
-    //free(result);
+
+    //Close the output file if it's not stdout
+    if (output != stdout) {
+        fclose(output);
+    }
 
     exit(EXIT_SUCCESS);
 }
@@ -248,17 +257,14 @@ void *crack(void *arg){
 
             if(strcmp(result,hash_array[j]) == 0){
                 //output cracked passwords
-                pthread_mutex_lock(&output_lock);
                 fprintf(output,"cracked  %s  %s\n",plain_array[k],hash_array[j]);
-                pthread_mutex_unlock(&output_lock);
                 cracked = 1;
+                break;
             }
         }
         if(!cracked){
-            pthread_mutex_lock(&output_lock);
             fprintf(output,"*** failed to crack  %s\n",hash_array[j]);
             ++fail_count;
-            pthread_mutex_unlock(&output_lock);
         }
         //add 1 to total hashes processed in single thread
         ++count_all;

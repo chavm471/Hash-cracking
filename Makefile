@@ -3,12 +3,15 @@ CC=gcc
 #WERROR = 
 WERROR = -Werror
 
+SANI=
+#SANI=-fsanitize=address
+
 CFLAGS= -g -Wall -Wextra -Wshadow -Wunreachable-code\
 	-Wredundant-decls -Wmissing-declarations\
 	-Wold-style-definition -Wmissing-prototypes\
 	-Wdeclaration-after-statement -Wno-return-local-addr\
 	-Wunsafe-loop-optimizations -Wuninitialized $(WERROR)\
-	-Wno-unused-parameter -fsanitize=address
+	-Wno-unused-parameter $(SANI)
 
 PROG=thread_hash
 
@@ -27,3 +30,5 @@ git:
 
 clean cls:
 	rm -f $(PROG) *.o *~ \#*
+tar:
+	tar cvaf Lab5${LOGNAME}.tar.gz *.[ch] [Mm]akefile
